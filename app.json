@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "Wave",
+    "slug": "Wave",
+    "version": "1.0.0",
+    "description": "Wave: Program your NFC network card with a single touch. Share your LinkedIn, portfolio, or any URL instantly.",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Wave uses local network to initialize NFC communication.",
+        "NSBonjourServiceTypes": [],
+        "NFCReaderUsageDescription": "Wave writes your URL to NFC tags. Your data is stored only on the physical tag. No data ever leaves your device.",
+        "NSExtensionActivationRule": {
+          "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+          "NSExtensionActivationSupportsText": false
+        }
+      },
+      "entitlements": {
+        "com.apple.developer.nfc.readersession.formats": [
+          "NDEF",
+          "NDEF"
+        ]
+      },
+      "bundleIdentifier": "com.anonymous.Wave",
+      "privacyManifest": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyTrackingDomains": []
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.NFC"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "scheme": "wave"
+  }
+}
