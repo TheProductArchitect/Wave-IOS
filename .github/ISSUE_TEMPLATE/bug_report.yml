@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible bug in app behavior or developer tooling.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please provide clear reproduction steps.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: Short bug summary
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include exact steps and expected vs actual behavior.
+      placeholder: |
+        1. Open app
+        2. Enter URL ...
+        3. Tap Program Tag ...
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - iOS (physical device)
+        - iOS Simulator
+        - Dev tooling/CI only
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and OS
+      placeholder: iPhone 15, iOS 18.2
+  - type: input
+    id: tag
+    attributes:
+      label: NFC tag type
+      placeholder: NTAG213/215/216
+  - type: dropdown
+    id: security-impact
+    attributes:
+      label: Security impact
+      options:
+        - none
+        - possible
+        - likely
+    validations:
+      required: true

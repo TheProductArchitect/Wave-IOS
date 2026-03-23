@@ -11,7 +11,6 @@ import {
   View,
   StyleSheet,
   useColorScheme,
-  AccessibilityInfo,
 } from 'react-native';
 import NfcManager, { Ndef, NfcTech } from 'react-native-nfc-manager';
 import Animated, {
@@ -25,6 +24,7 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
+import { type ValidationResult, validateURL } from './src/security/urlSafety';
 
 type ScreenState = 'guide' | 'input' | 'sync' | 'no-nfc' | 'read';
 type SyncState = 
@@ -36,94 +36,9 @@ type SyncState =
   | 'error';
 type TagCheckError = 'INCOMPATIBLE' | 'NOT_FOUND' | 'TIMEOUT' | 'USER_CANCELED';
 
-type ValidationResult = {
-  valid: boolean;
-  safetyLevel: 'safe' | 'warning' | 'trusted';
-  reason?: string;
-  allowProceed?: boolean;
-};
-
-type TrustedDomain = {
-  domain: string;
-  name: string;
-};
-
-const TRUSTED_DOMAINS: TrustedDomain[] = [
-  { domain: 'linkedin.com', name: 'LinkedIn' },
-  { domain: 'www.linkedin.com', name: 'LinkedIn' },
-  { domain: 'linktree.com', name: 'Linktree' },
-  { domain: 'github.com', name: 'GitHub' },
-  { domain: 'www.github.com', name: 'GitHub' },
-];
-
-const CYAN = '#00FFFF';
 const AMBER_WARNING = '#FFBF00';
 const RED = '#FF3B30';
 const NTAG215_CAPACITY = 504;
-
-// Security Validation Engine
-function validateURL(url: string): ValidationResult {
-  if (!url || typeof url !== 'string') {
-    return { valid: false, safetyLevel: 'warning', reason: 'Empty URL' };
-  }
-
-  const trimmed = url.trim();
-
-  // Check for malicious protocols
-  if (/^(javascript|data|file):/i.test(trimmed)) {
-    return { valid: false, safetyLevel: 'warning', reason: 'Malicious code detected (Malware Risk)' };
-  }
-
-  // Check for script tags
-  if (/<script|javascript:|data:/i.test(trimmed)) {
-    return { valid: false, safetyLevel: 'warning', reason: 'Malicious code detected (Malware Risk)' };
-  }
-
-  // Check for spoofing: @ symbol in hostname
-  try {
-    const urlObj = new URL(trimmed);
-    if (urlObj.hostname.includes('@')) {
-      return { valid: false, safetyLevel: 'warning', reason: 'Spoofed address detected (Phishing Risk)' };
-    }
-
-    // Allow http as a warning so users can explicitly proceed.
-    if (urlObj.protocol === 'http:') {
-      return {
-        valid: true,
-        safetyLevel: 'warning',
-        reason: 'Non-secure protocol. Tap Program Tag to proceed anyway.',
-        allowProceed: true,
-      };
-    }
-
-    // Block unsupported protocols.
-    if (urlObj.protocol !== 'https:') {
-      return { valid: false, safetyLevel: 'warning', reason: 'Unsupported protocol' };
-    }
-
-    // Check if trusted domain
-    const hostname = urlObj.hostname.toLowerCase();
-    const isTrusted = TRUSTED_DOMAINS.some(td => hostname === td.domain || hostname === td.domain.replace('www.', ''));
-    if (isTrusted) {
-      return { valid: true, safetyLevel: 'trusted', reason: 'Safety Verified' };
-    }
-
-    return { valid: true, safetyLevel: 'safe', reason: '' };
-  } catch (error) {
-    return { valid: false, safetyLevel: 'warning', reason: 'Invalid URL format' };
-  }
-}
-
-function getTrustedDomainName(url: string): string | null {
-  try {
-    const urlObj = new URL(url);
-    const hostname = urlObj.hostname.toLowerCase();
-    const trusted = TRUSTED_DOMAINS.find(td => hostname === td.domain || hostname === td.domain.replace('www.', ''));
-    return trusted?.name || null;
-  } catch {
-    return null;
-  }
-}
 
 // Theme colors
 const COLORS_DARK = {
@@ -282,19 +197,6 @@ function normalizeUrl(value: string): string {
   return `https://${trimmed}`;
 }
 
-function isValidUrl(value: string): boolean {
-  if (!value) {
-    return false;
-  }
-
-  try {
-    const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
 function formatInput(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -327,7 +229,6 @@ export default function App() {
   const [nfcSupported, setNfcSupported] = useState(true);
   const [showCompatibleTags, setShowCompatibleTags] = useState(false);
   const [urlValidation, setUrlValidation] = useState<ValidationResult>({ valid: false, safetyLevel: 'warning' });
-  const [isFromShareIntent, setIsFromShareIntent] = useState(false);
 
   const syncPulse = useSharedValue(0);
   const buttonPulse = useSharedValue(0);
@@ -527,7 +428,7 @@ export default function App() {
     return Promise.race([NfcManager.getTag(), timeout]);
   };
 
-  const ensureNtag215 = async () => {
+  const ensureNtag215 = useCallback(async () => {
     await NfcManager.requestTechnology(NfcTech.Ndef);
     setSyncState('searching');
     setSyncMessage(STATUS_MESSAGES['searching']);
@@ -552,7 +453,7 @@ export default function App() {
     if (capacity !== NTAG215_CAPACITY) {
       throwTagError('INCOMPATIBLE');
     }
-  };
+  }, []);
 
   const startProgramFlow = useCallback(async () => {
     if (!canWrite || isBusy) {
@@ -616,7 +517,7 @@ export default function App() {
         // Ignore cleanup errors
       });
     }
-  }, [canWrite, isBusy, normalizedUrl, resetToInput, successBlast, errorFlash]);
+  }, [canWrite, isBusy, normalizedUrl, resetToInput, successBlast, errorFlash, ensureNtag215]);
 
   // No NFC Support Screen
   if (!nfcSupported) {
@@ -636,7 +537,7 @@ export default function App() {
             ]}
             accessibilityRole="text"
           >
-            Your device doesn't support NFC or it's currently disabled. Enable NFC in Settings and try again.
+            Your device does not support NFC or it is currently disabled. Enable NFC in Settings and try again.
           </Text>
           <Pressable
             onPress={() => setScreenState('guide')}

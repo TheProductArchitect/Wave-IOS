@@ -25,15 +25,10 @@
       },
       "entitlements": {
         "com.apple.developer.nfc.readersession.formats": [
-          "NDEF",
           "NDEF"
         ]
       },
-      "bundleIdentifier": "com.anonymous.Wave",
-      "privacyManifest": {
-        "NSPrivacyTracking": false,
-        "NSPrivacyTrackingDomains": []
-      }
+      "bundleIdentifier": "com.anonymous.Wave"
     },
     "android": {
       "permissions": [
