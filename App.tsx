@@ -1,7 +1,9 @@
 import { StatusBar } from 'expo-status-bar';
+import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -39,6 +41,29 @@ type TagCheckError = 'INCOMPATIBLE' | 'NOT_FOUND' | 'TIMEOUT' | 'USER_CANCELED';
 const AMBER_WARNING = '#FFBF00';
 const RED = '#FF3B30';
 const NTAG215_CAPACITY = 504;
+const TRACKING_PARAMS = new Set([
+  'fbclid',
+  'gclid',
+  'dclid',
+  'msclkid',
+  'igshid',
+  'mc_cid',
+  'mc_eid',
+  'si',
+  'spm',
+  'yclid',
+  'cmpid',
+  'mibextid',
+  'trk',
+  'trkinfo',
+  'trackingid',
+  'lipi',
+  'licu',
+  'midtoken',
+  'midsig',
+  'sessionredirect',
+  'originalsubdomain',
+]);
 
 // Theme colors
 const COLORS_DARK = {
@@ -214,6 +239,63 @@ function formatInput(value: string): string {
   return value;
 }
 
+function extractFirstUrl(text: string): string {
+  if (!text) {
+    return '';
+  }
+
+  const match = text.match(/(https?:\/\/[^\s<>")\]]+|www\.[^\s<>")\]]+)/i);
+  if (!match) {
+    return text.trim();
+  }
+
+  return match[0].replace(/[),.;!?]+$/, '');
+}
+
+function cleanJunkFromUrl(value: string): string {
+  const input = formatInput(extractFirstUrl(value));
+  if (!input) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(normalizeUrl(input));
+
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      const lower = key.toLowerCase();
+      if (lower.startsWith('utm_') || TRACKING_PARAMS.has(lower)) {
+        parsed.searchParams.delete(key);
+      }
+    }
+
+    if (parsed.hostname.toLowerCase().includes('linkedin.com')) {
+      parsed.searchParams.delete('shareVia');
+      parsed.searchParams.delete('shareId');
+      parsed.searchParams.delete('refId');
+    }
+
+    parsed.hash = '';
+
+    let cleaned = parsed.toString();
+    if (parsed.pathname !== '/' && cleaned.endsWith('/')) {
+      cleaned = cleaned.slice(0, -1);
+    }
+
+    return cleaned;
+  } catch {
+    return input;
+  }
+}
+
+function prepareInputUrl(value: string, clean: boolean): string {
+  const extracted = extractFirstUrl(value);
+  if (!extracted) {
+    return '';
+  }
+
+  return clean ? cleanJunkFromUrl(extracted) : formatInput(extracted);
+}
+
 export default function App() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme !== 'light';
@@ -235,7 +317,6 @@ export default function App() {
   const successBlast = useSharedValue(0);
   const errorFlash = useSharedValue(0);
   const cardPosition = useSharedValue(0);
-  const signalPulse = useSharedValue(0);
 
   const normalizedUrl = useMemo(() => normalizeUrl(urlInput), [urlInput]);
   const validation = useMemo(() => validateURL(normalizedUrl), [normalizedUrl]);
@@ -293,23 +374,6 @@ export default function App() {
     syncPulse.value = 0;
   }, [screenState, syncPulse, syncState]);
 
-  // Signal pulse at antenna (when card is in sweet spot)
-  useEffect(() => {
-    if (cardPosition.value > 0.7) { // Sweet spot threshold
-      signalPulse.value = withRepeat(
-        withTiming(1, {
-          duration: 800,
-          easing: Easing.inOut(Easing.quad),
-        }),
-        -1,
-      );
-      return;
-    }
-
-    cancelAnimation(signalPulse);
-    signalPulse.value = 0;
-  }, [cardPosition, signalPulse]);
-
   // Button pulse animation
   useEffect(() => {
     const shouldGlow = screenState === 'input' && canWrite;
@@ -336,9 +400,9 @@ export default function App() {
       cardPosition.value = withRepeat(
         withSequence(
           withTiming(0, { duration: 0 }),
-          withTiming(0.8, { duration: 2000, easing: Easing.inOut(Easing.quad) }),
-          withTiming(0.8, { duration: 500 }),
-          withTiming(0, { duration: 2000, easing: Easing.inOut(Easing.quad) }),
+          withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
+          withTiming(1, { duration: 700 }),
+          withTiming(0, { duration: 1800, easing: Easing.inOut(Easing.quad) }),
         ),
         -1,
       );
@@ -392,15 +456,9 @@ export default function App() {
   const cardAnimStyle = useAnimatedStyle(() => {
     return {
       transform: [
-        { translateY: -220 * cardPosition.value }, // Move up toward antenna
+        // Move from outside top into the top NFC target zone.
+        { translateY: -150 * (1 - cardPosition.value) },
       ],
-    };
-  });
-
-  const signalPulseStyle = useAnimatedStyle(() => {
-    return {
-      transform: [{ scale: 1 + signalPulse.value * 0.5 }],
-      opacity: 1 - signalPulse.value * 0.6,
     };
   });
 
@@ -410,6 +468,19 @@ export default function App() {
     setSyncMessage('Ready to Wave');
     setErrorFix('');
     setIsBusy(false);
+  }, []);
+
+  const handlePaste = useCallback(async (clean: boolean) => {
+    const clipboardText = await Clipboard.getStringAsync();
+    const next = prepareInputUrl(clipboardText, clean);
+
+    if (!next) {
+      Alert.alert('No URL found', 'Copy a URL first, then try Paste again.');
+      return;
+    }
+
+    setUrlInput(next);
+    await Haptics.selectionAsync();
   }, []);
 
   const throwTagError = (type: TagCheckError): never => {
@@ -707,6 +778,60 @@ export default function App() {
                 accessibilityHint="Enter your LinkedIn profile or portfolio URL"
               />
 
+              <View
+                style={{
+                  marginTop: 12,
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                }}
+              >
+                <Pressable
+                  onPress={() => {
+                    handlePaste(false).catch(() => {
+                      Alert.alert('Paste failed', 'Unable to read your clipboard right now.');
+                    });
+                  }}
+                  style={{
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    minHeight: 44,
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Paste URL from clipboard"
+                >
+                  <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '700', letterSpacing: 0.8 }}>
+                    PASTE
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    handlePaste(true).catch(() => {
+                      Alert.alert('Paste failed', 'Unable to read your clipboard right now.');
+                    });
+                  }}
+                  style={{
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: colors.accent,
+                    backgroundColor: colors.accentGlow,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    minHeight: 44,
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Paste and clean URL"
+                >
+                  <Text style={{ color: colors.accent, fontSize: 12, fontWeight: '700', letterSpacing: 0.8 }}>
+                    PASTE + CLEAN
+                  </Text>
+                </Pressable>
+              </View>
+
               {/* Validation feedback */}
               {urlInput ? (
                 <View style={{ marginTop: 12 }}>
@@ -830,7 +955,7 @@ export default function App() {
                 {/* NFC Antenna indicator at top */}
                 <View
                   style={{
-                    marginTop: 16,
+                    marginTop: 22,
                     width: 50,
                     height: 6,
                     backgroundColor: colors.accent,
@@ -839,24 +964,6 @@ export default function App() {
                   }}
                   accessible
                   accessibilityLabel="NFC antenna location"
-                />
-
-                {/* Signal beam glow - visible when card in sweet spot */}
-                <Animated.View
-                  style={[
-                    signalPulseStyle,
-                    {
-                      position: 'absolute',
-                      top: 12,
-                      width: 60,
-                      height: 8,
-                      backgroundColor: colors.accent,
-                      borderRadius: 4,
-                      opacity: 0.5,
-                    },
-                  ]}
-                  accessible
-                  accessibilityLabel="Signal strength indicator"
                 />
 
                 {/* Phone camera cutout (visual reference) */}
@@ -880,6 +987,7 @@ export default function App() {
                   cardAnimStyle,
                   {
                     position: 'absolute',
+                    top: 72,
                     width: 70,
                     height: 110,
                     backgroundColor: isDark ? '#2a2a2a' : '#e0e0e0',
@@ -977,7 +1085,7 @@ export default function App() {
               accessibilityRole="text"
               accessibilityLabel="Touch instruction"
             >
-              Align card with the top edge of your phone.
+              Hold card at the top edge, near the camera bump.
             </Text>
 
             {/* Status */}
