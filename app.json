@@ -21,15 +21,18 @@
         "NSExtensionActivationRule": {
           "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
           "NSExtensionActivationSupportsText": false
-        }
+        },
+        "ITSAppUsesNonExemptEncryption": false
       },
       "entitlements": {
         "com.apple.developer.nfc.readersession.formats": [
-          "NDEF"
+          "NDEF",
+          "TAG"
         ]
       },
       "bundleIdentifier": "me.venugopinath.wave",
-      "buildNumber": "1"
+      "buildNumber": "2",
+      "appleTeamId": "W9559HJWN9"
     },
     "android": {
       "permissions": [
@@ -48,6 +51,11 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "scheme": "wave"
+    "scheme": "wave",
+    "extra": {
+      "eas": {
+        "projectId": "600a6105-1ea5-4843-9e1d-cdc7acad38cf"
+      }
+    }
   }
 }

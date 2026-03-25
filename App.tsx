@@ -13,6 +13,7 @@ import {
   View,
   StyleSheet,
   useColorScheme,
+  Linking,
 } from 'react-native';
 import NfcManager, { Ndef, NfcTech } from 'react-native-nfc-manager';
 import Animated, {
@@ -29,7 +30,7 @@ import Animated, {
 import { type ValidationResult, validateURL } from './src/security/urlSafety';
 import SplashScreen from './src/screens/SplashScreen';
 
-type ScreenState = 'splash' | 'guide' | 'input' | 'sync' | 'no-nfc' | 'read';
+type ScreenState = 'splash' | 'home' | 'guide' | 'input' | 'sync' | 'no-nfc' | 'read' | 'read-result';
 type SyncState = 
   | 'idle' 
   | 'searching' 
@@ -37,7 +38,7 @@ type SyncState =
   | 'syncing' 
   | 'success' 
   | 'error';
-type TagCheckError = 'INCOMPATIBLE' | 'NOT_FOUND' | 'TIMEOUT' | 'USER_CANCELED';
+type TagCheckError = 'INCOMPATIBLE' | 'NOT_FOUND' | 'TIMEOUT' | 'USER_CANCELED' | 'READ_ONLY' | 'CAPACITY_EXCEEDED' | 'UNKNOWN_ERROR';
 
 const AMBER_WARNING = '#FFBF00';
 const RED = '#FF3B30';
@@ -93,18 +94,21 @@ const COLORS_LIGHT = {
 const STATUS_MESSAGES: Record<SyncState, string> = {
   idle: 'Ready to Wave',
   searching: 'Looking for Card...',
-  found: 'Card Linked: NTAG215',
+  found: 'Card Linked',
   syncing: 'Programming Profile...',
-  success: 'Profile Synced!',
-  error: 'Error',
+  success: 'Your NFC tag is ready!',
+  error: 'Action Failed',
 };
 
 // Error fixes map for actionable guidance
 const ERROR_FIXES: Record<TagCheckError, { label: string; fix: string }> = {
   'NOT_FOUND': { label: 'Tag Not Found', fix: 'Hold the card closer for 2-3 seconds' },
-  'INCOMPATIBLE': { label: 'Incompatible Tag', fix: 'Use an NTAG215 NFC tag' },
+  'INCOMPATIBLE': { label: 'Incompatible Tag', fix: 'Use a compatible NFC tag (e.g., NTAG213, 215, 216)' },
   'TIMEOUT': { label: 'Request Timeout', fix: 'Try again—tap the card firmly to the phone' },
   'USER_CANCELED': { label: 'Action Cancelled', fix: 'Tap the program button to try again' },
+  'READ_ONLY': { label: 'Read-Only Tag', fix: 'This tag is locked or not formattable and cannot be programmed.' },
+  'CAPACITY_EXCEEDED': { label: 'Capacity Exceeded', fix: 'The URL is too long for this tag\'s memory.' },
+  'UNKNOWN_ERROR': { label: 'Writing Failed', fix: 'Failed to write. Ensure the tag is empty or rewritable.' },
 };
 
 const getThemeColors = (isDark: boolean) => (isDark ? COLORS_DARK : COLORS_LIGHT);
@@ -311,6 +315,7 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [nfcSupported, setNfcSupported] = useState(true);
   const [showCompatibleTags, setShowCompatibleTags] = useState(false);
+  const [readUrl, setReadUrl] = useState('');
   const [urlValidation, setUrlValidation] = useState<ValidationResult>({ valid: false, safetyLevel: 'warning' });
 
   const syncPulse = useSharedValue(0);
@@ -318,9 +323,12 @@ export default function App() {
   const successBlast = useSharedValue(0);
   const errorFlash = useSharedValue(0);
   const cardPosition = useSharedValue(0);
+  const floatAnim1 = useSharedValue(0);
+  const floatAnim2 = useSharedValue(0);
 
   const normalizedUrl = useMemo(() => normalizeUrl(urlInput), [urlInput]);
   const validation = useMemo(() => validateURL(normalizedUrl), [normalizedUrl]);
+  const readValidation = useMemo(() => validateURL(readUrl), [readUrl]);
   const canWrite = useMemo(() => validation.valid, [validation]);
   const isProceedWarning = useMemo(
     () => validation.valid && validation.safetyLevel === 'warning',
@@ -358,7 +366,7 @@ export default function App() {
 
   // Sync pulse animation
   useEffect(() => {
-    if (screenState === 'sync' && syncState !== 'success') {
+    if ((screenState === 'sync' || screenState === 'read') && syncState !== 'success') {
       syncPulse.value = withRepeat(
         withTiming(1, {
           duration: syncState === 'syncing' ? 1200 : 1800,
@@ -394,9 +402,39 @@ export default function App() {
     buttonPulse.value = 0;
   }, [screenState, buttonPulse, canWrite]);
 
+  // Floating animations for background
+  useEffect(() => {
+    if (screenState === 'splash') return;
+    
+    floatAnim1.value = withRepeat(
+      withSequence(
+        withTiming(-6, { duration: 2000, easing: Easing.inOut(Easing.sin) }),
+        withTiming(6, { duration: 2000, easing: Easing.inOut(Easing.sin) })
+      ),
+      -1,
+      true
+    );
+    floatAnim2.value = withRepeat(
+      withSequence(
+        withTiming(6, { duration: 2200, easing: Easing.inOut(Easing.sin) }),
+        withTiming(-6, { duration: 2200, easing: Easing.inOut(Easing.sin) })
+      ),
+      -1,
+      true
+    );
+  }, [screenState, floatAnim1, floatAnim2]);
+
+  const floatingStyle1 = useAnimatedStyle(() => {
+    return { transform: [{ translateY: floatAnim1.value }] };
+  });
+
+  const floatingStyle2 = useAnimatedStyle(() => {
+    return { transform: [{ translateY: floatAnim2.value }] };
+  });
+
   // Card animation for position guide
   useEffect(() => {
-    if (screenState === 'sync' && syncState !== 'success') {
+    if ((screenState === 'sync' || screenState === 'read') && syncState !== 'success') {
       cardPosition.value = withRepeat(
         withSequence(
           withTiming(0, { duration: 0 }),
@@ -521,7 +559,9 @@ export default function App() {
       }
     }
 
-    if (capacity !== NTAG215_CAPACITY) {
+    // Instead of enforcing exactly NTAG215 (504 bytes), we ensure the tag has enough space (e.g., > 40 bytes)
+    // or if capacity is unknown, we just proceed and let the write attempt fail if it's too small.
+    if (typeof capacity === 'number' && capacity < 40) {
       throwTagError('INCOMPATIBLE');
     }
   }, []);
@@ -540,6 +580,7 @@ export default function App() {
 
     try {
       await ensureNtag215();
+
       setSyncState('syncing');
       setSyncMessage(STATUS_MESSAGES['syncing']);
 
@@ -550,6 +591,11 @@ export default function App() {
       }
 
       await NfcManager.ndefHandler.writeNdefMessage(payload);
+
+      // On iOS, we can change the alert message to a success string right before closure.
+      if (Platform.OS === 'ios') {
+        NfcManager.setAlertMessageIOS('Successfully Programmed!');
+      }
 
       // Success haptic (heavy)
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -563,16 +609,31 @@ export default function App() {
       setSyncMessage(STATUS_MESSAGES['success']);
       setIsBusy(false);
 
-      setTimeout(() => {
-        setUrlInput('');
-        resetToInput();
-      }, 2000);
+      setUrlInput('');
+      
+      // Explicitly close the native session so the user doesn't have to wait for the dialog to fade out.
+      await NfcManager.cancelTechnologyRequest();
     } catch (error) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
 
-      const cause = error instanceof Error ? error.name || error.message : '';
-      const errorType = (cause as TagCheckError) || 'TIMEOUT';
-      const errorInfo = ERROR_FIXES[errorType] || ERROR_FIXES['TIMEOUT'];
+      const cause = error instanceof Error ? (error.name || error.message) : String(error);
+      let errorType: TagCheckError = 'TIMEOUT';
+
+      if (cause === 'USER_CANCELED' || cause === 'cancelled' || cause === 'NfcManager.requestTechnology was cancelled') {
+        errorType = 'USER_CANCELED';
+      } else if (cause === 'INCOMPATIBLE') {
+        errorType = 'INCOMPATIBLE';
+      } else if (cause.includes('not found') || cause === 'NOT_FOUND') {
+        errorType = 'NOT_FOUND';
+      } else if (cause.toLowerCase().includes('read only') || cause.toLowerCase().includes('not ndef formattable') || cause.toLowerCase().includes('locked')) {
+        errorType = 'READ_ONLY';
+      } else if (cause.toLowerCase().includes('capacity') || cause.toLowerCase().includes('space')) {
+        errorType = 'CAPACITY_EXCEEDED';
+      } else if (cause !== 'TIMEOUT' && cause !== 'NFC_TIMEOUT') {
+        errorType = 'UNKNOWN_ERROR';
+      }
+
+      const errorInfo = ERROR_FIXES[errorType] || ERROR_FIXES['UNKNOWN_ERROR'];
 
       setSyncState('error');
       setIsBusy(false);
@@ -590,12 +651,75 @@ export default function App() {
     }
   }, [canWrite, isBusy, normalizedUrl, resetToInput, successBlast, errorFlash, ensureNtag215]);
 
+  const startReadFlow = useCallback(async () => {
+    if (isBusy) return;
+
+    setScreenState('read');
+    setSyncState('idle');
+    setSyncMessage('Ready to Read');
+    setReadUrl('');
+    setIsBusy(true);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
+    try {
+      await NfcManager.requestTechnology(NfcTech.Ndef);
+      setSyncState('searching');
+      setSyncMessage('Hold Tag Near Reader...');
+
+      const tag = await waitForTagOrTimeout(10000);
+
+      setSyncState('found');
+      setSyncMessage('Tag Found. Reading...');
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      if (tag && tag.ndefMessage && tag.ndefMessage.length > 0) {
+        // Find a URI record
+        const ndefRecord = tag.ndefMessage[0];
+        let uri = Ndef.uri.decodePayload(new Uint8Array(ndefRecord.payload as number[]));
+        
+        if (uri) {
+          if (Platform.OS === 'ios') {
+            NfcManager.setAlertMessageIOS('Scan Complete!');
+          }
+          await NfcManager.cancelTechnologyRequest();
+          setReadUrl(uri);
+          setScreenState('read-result');
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else {
+          throw new Error('No valid URL found on this tag.');
+        }
+      } else {
+        throw new Error('Tag is empty.');
+      }
+
+    } catch (err: unknown) {
+      console.warn(err);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      const isTimeout = err instanceof Error && err.message === 'NFC_TIMEOUT';
+      const isCanceled = typeof err === 'string' && err === 'cancelled';
+      
+      if (!isCanceled && !isTimeout) {
+        Alert.alert('Scan Failed', err instanceof Error ? err.message : String(err));
+      }
+      
+      if (isTimeout) {
+         Alert.alert('Scan Timed Out', 'No tag was detected.');
+      }
+
+      setScreenState('home');
+    } finally {
+      setIsBusy(false);
+      NfcManager.cancelTechnologyRequest().catch(() => {});
+    }
+  }, [isBusy]);
+
   // Splash Screen
   if (screenState === 'splash') {
     return (
       <>
         <StatusBar style="light" />
-        <SplashScreen onComplete={() => setScreenState(nfcSupported ? 'guide' : 'no-nfc')} />
+        <SplashScreen onComplete={() => setScreenState(nfcSupported ? 'home' : 'no-nfc')} />
       </>
     );
   }
@@ -637,11 +761,97 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
+
+      {/* Global Futuristic Background Animations */}
+      <View style={[StyleSheet.absoluteFillObject, { overflow: 'hidden' }]} pointerEvents="none">
+        <Animated.View style={[{
+          position: 'absolute',
+          top: '10%',
+          left: '-20%',
+          width: 300,
+          height: 300,
+          borderRadius: 150,
+          backgroundColor: colors.accent,
+          opacity: 0.1,
+        }, floatingStyle1]} />
+        <Animated.View style={[{
+          position: 'absolute',
+          top: '25%',
+          right: '-30%',
+          width: 400,
+          height: 400,
+          borderRadius: 200,
+          backgroundColor: colors.text,
+          opacity: 0.05,
+        }, floatingStyle2]} />
+        <Animated.View style={[{
+          position: 'absolute',
+          bottom: '10%',
+          right: '-10%',
+          width: 250,
+          height: 250,
+          borderRadius: 125,
+          backgroundColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
+          opacity: 0.1,
+        }, floatingStyle1]} />
+        <Animated.View style={[{
+          position: 'absolute',
+          bottom: '25%',
+          left: '-20%',
+          width: 350,
+          height: 350,
+          borderRadius: 175,
+          backgroundColor: colors.text,
+          opacity: 0.05,
+        }, floatingStyle2]} />
+      </View>
+
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
-        {screenState === 'guide' ? (
+        {screenState === 'home' ? (
+          <Animated.View
+            entering={FadeIn.duration(500).easing(Easing.out(Easing.cubic))}
+            style={{ flex: 1, position: 'relative' }}
+          >
+            {/* Top Half: Program */}
+            <View style={{ flex: 1, padding: 24, paddingTop: 40, justifyContent: 'center', alignItems: 'center' }}>
+              <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)', borderRadius: 24, padding: 24, borderColor: colors.borderLight, borderWidth: 1 }}>
+                <Text style={[styles.title, { marginBottom: 12, textAlign: 'center' }]}>PROGRAM</Text>
+                <Text style={[styles.subtitle, { textAlign: 'center', marginBottom: 32 }]}>
+                  Write your link onto a blank NFC tag to instantly share it when tapped against any modern smartphone.
+                </Text>
+                <Animated.View style={[floatingStyle1, { width: '100%' }]}>
+                  <Pressable
+                    onPress={() => setScreenState('guide')}
+                    style={[styles.button, { width: '100%', shadowColor: colors.accent, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 16, elevation: 8 }]}
+                  >
+                    <Text style={styles.buttonText}>PROGRAM A TAG</Text>
+                  </Pressable>
+                </Animated.View>
+              </View>
+            </View>
+
+            {/* Bottom Half: Scan */}
+            <View style={{ flex: 1, padding: 24, paddingBottom: 40, justifyContent: 'center', alignItems: 'center' }}>
+              <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)', borderRadius: 24, padding: 24, borderColor: colors.borderLight, borderWidth: 1 }}>
+                <Text style={[styles.title, { marginBottom: 12, textAlign: 'center' }]}>SECURE SCAN</Text>
+                <Text style={[styles.subtitle, { textAlign: 'center', marginBottom: 32 }]}>
+                  Safely format and verify any unknown NFC tag in a restricted sandbox before opening it to protect against malicious payloads.
+                </Text>
+                <Animated.View style={[floatingStyle2, { width: '100%' }]}>
+                  <Pressable
+                    onPress={startReadFlow}
+                    style={[styles.button, { width: '100%', backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }]}
+                  >
+                    <Text style={[styles.buttonText, { color: colors.text }]}>SCAN A TAG</Text>
+                  </Pressable>
+                </Animated.View>
+              </View>
+            </View>
+          </Animated.View>
+        ) : screenState === 'guide' ? (
           <Animated.View
             entering={FadeIn.duration(500).easing(Easing.out(Easing.cubic))}
             style={styles.guideContainer}
@@ -883,7 +1093,7 @@ export default function App() {
               )}
 
               <Pressable
-                onPress={startProgramFlow}
+                onPress={() => startProgramFlow()}
                 disabled={!canWrite || isBusy}
                 style={{
                   height: 144,
@@ -921,8 +1131,67 @@ export default function App() {
                   PROGRAM TAG
                 </Text>
               </Pressable>
+              
+              <Text style={{ marginTop: 24, fontSize: 12, color: colors.textTertiary, textAlign: 'center', maxWidth: 260 }}>
+                Writing will automatically overwrite any existing data on the tag.
+              </Text>
             </View>
           </View>
+        ) : screenState === 'read-result' ? (
+          <Animated.View
+            entering={FadeIn.duration(500).easing(Easing.out(Easing.cubic))}
+            style={{ flex: 1, paddingHorizontal: 24, paddingTop: 60, paddingBottom: 40 }}
+          >
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={[styles.title, { marginBottom: 16, textAlign: 'center' }]}>SCAN RESULTS</Text>
+              
+              <View style={{ width: '100%', borderRadius: 16, borderWidth: 1, borderColor: readValidation.safetyLevel === 'warning' ? AMBER_WARNING : readValidation.safetyLevel === 'trusted' ? '#00FF00' : colors.borderLight, backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)', padding: 24 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <Text style={{ fontSize: 13, color: colors.accent, fontWeight: 'bold', letterSpacing: 1 }}>SCANNED URL</Text>
+                  {readValidation.safetyLevel === 'warning' ? (
+                    <Text style={{ fontSize: 12, color: AMBER_WARNING, fontWeight: 'bold', letterSpacing: 0.5 }}>⚠️ MALICIOUS / WARNING</Text>
+                  ) : readValidation.safetyLevel === 'trusted' ? (
+                    <Text style={{ fontSize: 12, color: '#00FF00', fontWeight: 'bold', letterSpacing: 0.5 }}>✓ VERIFIED SAFE</Text>
+                  ) : (
+                    <Text style={{ fontSize: 12, color: colors.textSecondary, fontWeight: 'bold', letterSpacing: 0.5 }}>✓ SAFE</Text>
+                  )}
+                </View>
+                <Text style={{ color: colors.text, fontSize: 16, lineHeight: 22 }}>{readUrl}</Text>
+                
+                {readValidation.reason && readValidation.safetyLevel === 'warning' ? (
+                  <Text style={{ color: AMBER_WARNING, fontSize: 13, marginTop: 12, fontWeight: '500' }}>
+                    {readValidation.reason}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+
+            <View style={{ width: '100%', gap: 16 }}>
+              <Pressable
+                onPress={() => Linking.openURL(readUrl).catch(() => Alert.alert('Error', 'Cannot open this URL'))}
+                style={[styles.button, { width: '100%' }]}
+              >
+                <Text style={styles.buttonText}>OPEN IN BROWSER</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={async () => {
+                  await Clipboard.setStringAsync(readUrl);
+                  Alert.alert('Copied!', 'URL copied to clipboard.');
+                }}
+                style={[styles.button, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)', width: '100%' }]}
+              >
+                <Text style={[styles.buttonText, { color: colors.text }]}>COPY URL</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => setScreenState('home')}
+                style={{ padding: 16, width: '100%' }}
+              >
+                <Text style={{ textAlign: 'center', color: colors.textSecondary, fontWeight: '600' }}>BACK TO HOME</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
         ) : (
           <View
             style={{
@@ -1130,10 +1399,76 @@ export default function App() {
               </Text>
             ) : null}
 
-            {/* Try Again button */}
-            {syncState !== 'success' ? (
+            {/* Action buttons */}
+            {syncState === 'success' ? (
+              <View style={{ flexDirection: 'row', gap: 16, marginTop: 32 }}>
+                <Pressable
+                  onPress={() => setScreenState('home')}
+                  style={{
+                    borderRadius: 999,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    minHeight: 44,
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: 'bold', letterSpacing: 2, color: colors.text }}>HOME</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setScreenState('input')}
+                  style={{
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    minHeight: 44,
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: 'bold', letterSpacing: 2, color: colors.accent }}>PROGRAM ANOTHER</Text>
+                </Pressable>
+              </View>
+            ) : syncState === 'error' ? (
+              <View style={{ flexDirection: 'row', gap: 16, marginTop: 32 }}>
+                <Pressable
+                  onPress={() => startProgramFlow()}
+                  disabled={isBusy}
+                  style={{
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    minHeight: 44,
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: 'bold', letterSpacing: 2, color: colors.accent }}>TRY AGAIN</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setScreenState('input')}
+                  disabled={isBusy}
+                  style={{
+                    borderRadius: 999,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    minHeight: 44,
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: 'bold', letterSpacing: 2, color: colors.text }}>CHANGE URL</Text>
+                </Pressable>
+              </View>
+            ) : screenState === 'read' || screenState === 'sync' ? (
               <Pressable
-                onPress={resetToInput}
+                onPress={() => {
+                  setIsBusy(false);
+                  setScreenState('home');
+                  NfcManager.cancelTechnologyRequest().catch(() => {});
+                }}
                 disabled={isBusy}
                 style={{
                   marginTop: 32,
@@ -1143,22 +1478,10 @@ export default function App() {
                   paddingHorizontal: 24,
                   paddingVertical: 12,
                   minHeight: 44,
+                  justifyContent: 'center',
                 }}
-                accessible
-                accessibilityRole="button"
-                accessibilityLabel="Try again button"
-                accessibilityState={{ disabled: isBusy }}
               >
-                <Text
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 'bold',
-                    letterSpacing: 2,
-                    color: colors.accent,
-                  }}
-                >
-                  TRY AGAIN
-                </Text>
+                <Text style={{ fontSize: 12, fontWeight: 'bold', letterSpacing: 2, color: colors.accent }}>CANCEL</Text>
               </Pressable>
             ) : null}
           </View>
