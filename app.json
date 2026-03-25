@@ -28,7 +28,8 @@
           "NDEF"
         ]
       },
-      "bundleIdentifier": "com.anonymous.Wave"
+      "bundleIdentifier": "me.venugopinath.wave",
+      "buildNumber": "1"
     },
     "android": {
       "permissions": [
