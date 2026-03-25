@@ -27,8 +27,9 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { type ValidationResult, validateURL } from './src/security/urlSafety';
+import SplashScreen from './src/screens/SplashScreen';
 
-type ScreenState = 'guide' | 'input' | 'sync' | 'no-nfc' | 'read';
+type ScreenState = 'splash' | 'guide' | 'input' | 'sync' | 'no-nfc' | 'read';
 type SyncState = 
   | 'idle' 
   | 'searching' 
@@ -303,7 +304,7 @@ export default function App() {
   const colors = useMemo(() => getThemeColors(isDark), [isDark]);
 
   const [urlInput, setUrlInput] = useState('');
-  const [screenState, setScreenState] = useState<ScreenState>('guide');
+  const [screenState, setScreenState] = useState<ScreenState>('splash');
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [syncMessage, setSyncMessage] = useState('Ready to Wave');
   const [errorFix, setErrorFix] = useState('');
@@ -335,7 +336,6 @@ export default function App() {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         if (errorMsg.includes('not supported') || errorMsg.includes('disabled')) {
           setNfcSupported(false);
-          setScreenState('no-nfc');
         }
         console.warn('NFC initialization:', errorMsg);
       }
@@ -589,6 +589,16 @@ export default function App() {
       });
     }
   }, [canWrite, isBusy, normalizedUrl, resetToInput, successBlast, errorFlash, ensureNtag215]);
+
+  // Splash Screen
+  if (screenState === 'splash') {
+    return (
+      <>
+        <StatusBar style="light" />
+        <SplashScreen onComplete={() => setScreenState(nfcSupported ? 'guide' : 'no-nfc')} />
+      </>
+    );
+  }
 
   // No NFC Support Screen
   if (!nfcSupported) {
